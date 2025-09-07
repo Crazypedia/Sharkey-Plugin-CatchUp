@@ -1,0 +1,4 @@
+{
+  "type": "plugin",
+  "data": "/// @ 0.12.4\n### {\n  name: \"CatchUp Widget\",\n  version: \"0.1.0\",\n  author: \"Sharkey CatchUp authors\",\n  description: \"Pinned summary of CatchUp activity\"\n}\n\n@init(){ Ui:render([ CatchUpWidget:UI() ]) }\n\nnamespace CatchUpWidget {\n  @UI(){\n    return Ui:C:container({ children: [\n      Ui:C:text({ text: 'CatchUp summary' }),\n      Ui:C:button({ text: 'Open CatchUp plugin', onClick:@(){ Mk:dialog('Info','Use User menu → Open CatchUp','info') } })\n    ] })\n  }\n}\n"
+}

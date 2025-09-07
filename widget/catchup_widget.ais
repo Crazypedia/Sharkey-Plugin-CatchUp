@@ -1,0 +1,18 @@
+/// @ 0.12.4
+### {
+  name: "CatchUp Widget",
+  version: "0.1.0",
+  author: "Sharkey CatchUp authors",
+  description: "Pinned summary of CatchUp activity"
+}
+
+@init(){ Ui:render([ CatchUpWidget:UI() ]) }
+
+namespace CatchUpWidget {
+  @UI(){
+    return Ui:C:container({ children: [
+      Ui:C:text({ text: 'CatchUp summary' }),
+      Ui:C:button({ text: 'Open CatchUp plugin', onClick:@(){ Mk:dialog('Info','Use User menu → Open CatchUp','info') } })
+    ] })
+  }
+}

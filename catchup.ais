@@ -6,17 +6,17 @@
   description: "Review missed notes in a time window"
 }
 
-@init(){ Ui:render(CatchUp:UI()) }
+@init(){ Ui:render(CatchUp.UI()) }
 
-namespace CatchUp {
-  let state = {
+const CatchUp = {
+  state: {
     context: "home",
     windowHours: 12,
     filters: { originals: true, replies: false, renotes: false },
     stats: { scanned: 0 }
-  }
+  },
 
-  @UI(){
+  UI: @(){
     return Ui:C:page({
       title: "CatchUp",
       children: [
@@ -25,25 +25,25 @@ namespace CatchUp {
         Ui:C:container({ id: "toplinks" })
       ]
     })
-  }
+  },
 
-  @open(ctx, hours, filters){
-    state.context = ctx
-    state.windowHours = hours
-    state.filters = filters
-    CatchUp:refresh()
-  }
+  open: @(ctx, hours, filters){
+    CatchUp.state.context = ctx
+    CatchUp.state.windowHours = hours
+    CatchUp.state.filters = filters
+    CatchUp.refresh()
+  },
 
-  @refresh(){
-    state.stats = { scanned: 0 }
-    let res = CatchUp:fetchWindow(state.context, state.windowHours, state.filters)
-    state.stats.scanned = res.items.len()
-    CatchUp:renderAuthors(res.groups)
-    CatchUp:renderFeed(res.groups)
-    CatchUp:renderTopLinks(res.links)
-  }
+  refresh: @(){
+    CatchUp.state.stats = { scanned: 0 }
+    let res = CatchUp.fetchWindow(CatchUp.state.context, CatchUp.state.windowHours, CatchUp.state.filters)
+    CatchUp.state.stats.scanned = res.items.len()
+    CatchUp.renderAuthors(res.groups)
+    CatchUp.renderFeed(res.groups)
+    CatchUp.renderTopLinks(res.links)
+  },
 
-  @fetchWindow(ctx, hours, filters){
+  fetchWindow: @(ctx, hours, filters){
     let endTs = Time:now()
     let startTs = endTs - hours*3600*1000
     let acc = []
@@ -75,31 +75,31 @@ namespace CatchUp {
       groups[n.user.id].push({ note:n, kind })
       let urls = Regex:find_all(URL_REGEX, n.text || '')
       for u in urls {
-        let k = CatchUp:linkKey(u)
+        let k = CatchUp.linkKey(u)
         linkMap[k] = (linkMap[k] || 0) + 1
       }
     }
     return { items: acc, groups: groups, links: linkMap }
-  }
+  },
 
-  @linkKey(u){
+  linkKey: @(u){
     let t = Url:parse(u)
     let host = (t.host || '').lower()
     let path = (t.path || '/')
     path = Regex:replace('/{2,}', '/', path)
     if path.len() > 1 && path.endsWith('/') { path = path.slice(0, path.len()-1) }
     return `{host}{path}`
-  }
+  },
 
-  @renderAuthors(g){
+  renderAuthors: @(g){
     Ui:get('authors').update({ children: [ Ui:C:text({ text: `Authors: {g.keys().len()}` }) ] })
-  }
+  },
 
-  @renderFeed(g){
-    Ui:get('feed').update({ children: [ Ui:C:text({ text: `Feed items: {state.stats.scanned}` }) ] })
-  }
+  renderFeed: @(g){
+    Ui:get('feed').update({ children: [ Ui:C:text({ text: `Feed items: {CatchUp.state.stats.scanned}` }) ] })
+  },
 
-  @renderTopLinks(m){
+  renderTopLinks: @(m){
     let entries = m.entries().sort(@(a,b){ b[1]-a[1] }).slice(0,10)
     Ui:get('toplinks').update({ children: [ Ui:C:text({ text: `Top Links: {entries.len()}` }) ] })
   }

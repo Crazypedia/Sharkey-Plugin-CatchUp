@@ -22,7 +22,7 @@ The project is planned to deliver three artifacts:
 2. **AiScript widget** – compact summary with a button to open the plugin.
 3. **Hosted installer page** – one‑click install URL with SHA‑512 hashes.
 
-Data is fetched using `Mk:api` calls to `notes/timeline` (Home) or `notes/hybrid-timeline` (Hybrid)`.
+Data is fetched using `Mk:api` calls to `notes/timeline` (Home) or `notes/hybrid-timeline` (Hybrid).
 Notes are classified as original, reply, renote, or quote and grouped by author. A Top Links panel extracts and counts URLs.
 
 ## Installation

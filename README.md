@@ -23,6 +23,7 @@ The project is planned to deliver three artifacts:
 3. **Hosted installer page** – one‑click install URL with SHA‑512 hashes.
 
 Data is fetched using `Mk:api` calls to `notes/timeline` (Home) or `notes/hybrid-timeline` (Hybrid).
+
 Notes are classified as original, reply, renote, or quote and grouped by author. A Top Links panel extracts and counts URLs.
 
 ## Installation
@@ -37,6 +38,7 @@ Then open the following URL in your browser, replacing `{YOUR_INSTANCE}` with th
 
 ```
 https://{YOUR_INSTANCE}/install-extensions?url=https://raw.githubusercontent.com/<REPO_OWNER>/Sharkey-Plugin-CatchUp/main/dist/catchup.json&hash=d9b1c4b676cd11ac1d3372ef61ef1b30c5d87571a8018c64b868d80324865d789c29703a6dafca90f262bfceb248537d281d9f526e95a1223d976310f53ddef6
+
 ```
 
 ## Development

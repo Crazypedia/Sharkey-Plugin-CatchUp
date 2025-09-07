@@ -2,6 +2,10 @@
 
 Sharkey CatchUp is an experimental plugin for Misskey/Sharkey that provides a focused dashboard to review what you missed on your Home or Hybrid timelines. The plugin aggregates recent activity from the people you follow and offers tools to triage posts quickly.
 
+## Disclaimer
+
+This codebase is mostly vibe-coded and lightly proofread. If anything works, it's either a miracle or the result of a helpful human commit.
+
 ## Features
 
 - **Timeline contexts**: switch between Home and Hybrid timelines.

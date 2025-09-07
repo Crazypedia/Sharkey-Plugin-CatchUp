@@ -1,0 +1,448 @@
+# SPEC-001-CatchUp Plugin for Misskey/Sharkey
+
+## Requirements
+
+### Must have
+
+* Catch-up dashboard for **Home** and **Hybrid** timelines, selectable.
+* Time windows: **3h, 6h, 9h, 12h, 18h, 24h, 36h, 48h**.
+* Filters: **Originals**, **Boosts**, **Replies**; multiple may be active.
+* Per-author grouping with avatar strip ordered by post count in window; tap/click to focus that author’s notes only.
+* **Top Links** panel that deduplicates links shared by followees in the window; sorted by frequency; open in new tab.
+* Infinite pagination within the selected window using Misskey params (page size ≤100); stop when **untilDate** reached.
+* Respect visibility: exclude DMs and non-viewable notes; honor mutes/blocks per server behavior.
+* Minimal scopes: read-only; no write scopes.
+* Local cache for last successful window per context to speed re-open; clearable in UI.
+* Error states: auth lost, network failure, server error, empty results; user-facing messages.
+* One-click install entry point (install-extensions URL) from a hosted plugin page.
+
+### Should have
+
+* Keyboard shortcuts: left/right to move between authors, up/down to scroll feed, `F` to toggle filter chips.
+* “Since last visit” preset based on last plugin open time.
+* Tally bubbles on avatar strip: count of posts in window.
+* Top Links quick toggle in header; show top 10 links with counts; click-through to filtered view of notes that shared that link.
+* Basic i18n keys and RTL-safe layout; leverage Misskey locale.
+* Accessibility: focus order, ARIA labels on controls; 44px hit targets.
+
+### Could have
+
+* Per-author “mark done” and “skip” to hide from strip for the session.
+* Simple analytics panel shown locally only: total authors active, total notes scanned, API pages fetched.
+* Persist and sync plugin settings via Mk\:save across sessions.
+
+### Won’t have (MVP)
+
+* Server-side indexing or background jobs.
+* Push streaming integration; polling only.
+* Full preview cards fetching Open Graph offsite; rely on note content only.
+
+### Non-functional
+
+* Performance: default hard cap of **N pages × 100 notes** per context to bound CPU and API usage; target <1.5s first render on typical timelines.
+* Privacy: never transmit tokens or data to third-party endpoints; all requests go to the user’s instance only.
+* Compatibility: Misskey/Sharkey instances with endpoints that support **sinceId/untilId** and, if available, **sinceDate/untilDate**; degrade gracefully if date params unsupported.
+
+### Distribution
+
+* Hosted installer page providing one-click install URL and SHA-512 hash; includes version, changelog, and scopes.
+
+### Config (user-visible)
+
+* Default context: Home | Hybrid.
+* Default window: one of 3h/6h/9h/12h/18h/24h/36h/48h.
+* Page cap per context (for performance).
+* Toggle defaults: Originals on, Boosts off, Replies off.
+* Show Top Links: on/off.
+* Clear cache button.
+
+## Method
+
+### High-level architecture
+
+* **Artifacts**: 1) User Plugin (full-screen CatchUp view) 2) AiScript App **Widget** (summary + open button) 3) Hosted “one‑click install” page.
+* **APIs**: `Mk:api` to call Misskey endpoints; `Ui:*` for rendering; `Plugin:*` for menu hooks; `Mk:save/load` for local persistence. (Widget uses same UI API.)
+* **Data sources**: `notes/timeline` (Home) and `notes/hybrid-timeline` (Hybrid). Use paging with `limit≤100`, `untilId|sinceId` and prefer `sinceDate|untilDate` when supported by the instance. Fall back to id‑paging.
+* **Menu entry points**: Default **User menu** action. Optional toggles to add **Post form** and **Note menu** actions. Actions open the CatchUp page via `Plugin:open_url`.
+
+### Permissions
+
+* Default: **no write scopes**. Use the web session token via `Mk:api` for read‑only timeline endpoints. If an instance enforces explicit read scopes for timelines, expose a setting to add the required minimal scope at install time.
+
+### Core data flow
+
+1. **Window selection** → hours: `3, 6, 9, 12, 18, 24, 36, 48`.
+2. **Context** → `home | hybrid`.
+3. **Fetch loop** until one of: a) oldest note `createdAt` < windowStart or b) page‑cap reached (default **8×100**).
+4. **Classify** each note:
+
+   * `type = original` if no `replyId` and no `renoteId`.
+   * `type = reply` if `replyId` present.
+   * `type = renote` if `renoteId` present; `quote` if `renoteId` and `text` non‑empty.
+5. **Group by author**: `authorId → [notes]`, order authors by note count desc.
+6. **Top Links**: extract URLs from text/MFM via regex, normalize, count, sort desc; clicking a link filters notes to those that include it.
+7. **Render** CatchUp with header controls, author strip, feed list honoring filters, and a side panel for Top Links.
+
+### Endpoint usage
+
+* **Home**: `Mk:api('notes/timeline', { limit, withFiles:false, withRenotes:toggle, withReplies:toggle, sinceId?, untilId?, sinceDate?, untilDate? })`.
+* **Hybrid**: `Mk:api('notes/hybrid-timeline', { ...same params... })`.
+* **Note expansion** (on demand): `Mk:api('notes/show', { noteId })` to resolve roots for thread badges when needed.
+
+### UI layout (plugin page)
+
+* **Header**: context switch, time‑range dropdown, filter chips: `Originals | Replies | Renotes/Quotes`, Top Links toggle, Refresh.
+* **Author strip**: horizontal avatars ordered by count; count badge; click to focus.
+* **Feed**: list virtualized by simple chunking; per‑note badges for `reply` or `renote/quote`.
+* **Right panel**: Top Links (top 10) with counts.
+* **Footer**: window limits reached indicator and fetch stats.
+
+### UI layout (App Widget)
+
+* Compact summary: total authors, notes scanned, top 3 links. Primary button opens full CatchUp.
+
+### Config keys (metadata `config`)
+
+* `defaultContext` (string, default `home`).
+* `defaultWindowHours` (number, default `12`).
+* `pageCap` (number, default `8`).
+* `showTopLinks` (bool, default `true`).
+* `filters` (object: `{ originals:true, replies:false, renotes:false }`).
+* `addToPostForm` (bool, default `false`).
+* `addToNoteMenu` (bool, default `false`).
+
+### Algorithms
+
+**A. Fetch within window**
+
+```
+let endTs = Mk:now()
+let startTs = endTs - hours*3600*1000
+let acc = []
+let page = 0
+let cursor = null
+while page < pageCap {
+  let params = { limit: 100, withFiles: false, withRenotes: filters.renotes, withReplies: filters.replies }
+  if cursor != null { params.untilId = cursor }
+  // Prefer date bounds when supported by the instance
+  params.sinceDate = startTs
+  params.untilDate = endTs
+  let res = Mk:api(ctx == 'home' ? 'notes/timeline' : 'notes/hybrid-timeline', params)
+  if res.len() == 0 { break }
+  acc.push(...res)
+  cursor = res.last().id
+  if res.last().createdAt < startTs { break }
+  page += 1
+}
+```
+
+**B. Classification and grouping**
+
+```
+let groups = Map:new()
+for note in acc {
+  if note.visibility == 'specified' { continue } // skip DMs
+  let kind = note.renoteId ? (note.text ? 'quote' : 'renote') : (note.replyId ? 'reply' : 'original')
+  let urls = Regex:find_all(urlRegex, note.text)
+  TopLinks:add(urls)
+  groups[note.user.id].push({ note, kind })
+}
+```
+
+**C. Top Links grouping rule**
+
+```
+@linkKey(u) {
+  let t = Url:parse(u)
+  // group by domain + normalized path; drop query+hash entirely
+  let host = (t.host || '').lower()
+  let path = (t.path || '/')
+  // normalize: collapse multiple slashes, drop trailing slash (except root)
+  path = Regex:replace('/{2,}', '/', path)
+  if path.len() > 1 && path.endsWith('/') { path = path.slice(0, path.len()-1) }
+  return `{host}{path}`
+}
+
+TopLinks:add(urls.map(@(u){ linkKey(u) }))
+```
+
+@normalizeUrl(u) {
+let t = Url\:parse(u)
+t.hash = ''
+// drop common tracking params
+t.query = Query\:omit(t.query, \['utm\_source','utm\_medium','utm\_campaign','utm\_term','utm\_content','fbclid'])
+return Url\:format(t)
+}
+
+````
+
+### PlantUML: component view
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+actor User
+node "Misskey Web" {
+  component "CatchUp Plugin
+(AiScript)" as Plugin
+  component "App Widget
+(AiScript)" as Widget
+}
+node "Misskey API" {
+  [notes/timeline]
+  [notes/hybrid-timeline]
+  [notes/show]
+}
+User --> Plugin
+User --> Widget
+Plugin --> [notes/timeline]
+Plugin --> [notes/hybrid-timeline]
+Plugin --> [notes/show]
+Widget --> Plugin : open full view
+@enduml
+````
+
+### One‑click install
+
+* Host an installer endpoint returning JSON with `type: "plugin"` and the AiScript as `data` string, linked via `https://{host}/install-extensions?url={apiUrl}&hash={sha512}`. Document hash and version on the page.
+
+### Failure handling
+
+* On API error → show dialog and stop fetching.
+* If date bounds unsupported → retry without `sinceDate/untilDate` using `untilId` paging.
+* Hard stop at `pageCap×100` to protect performance.
+
+## Implementation
+
+### Repo layout
+
+```
+/ catchup-plugin
+  /plugin
+    catchup.ais            # main user plugin (full view)
+  /widget
+    catchup_widget.ais     # AiScript App widget variant
+  /site
+    index.html             # installer page with one-click link
+    api/plugin.json        # returns external-install JSON for plugin
+    api/widget.json        # returns external-install JSON for widget
+```
+
+### AiScript: plugin skeleton (`plugin/catchup.ais`)
+
+```
+/// @ 0.12.4
+### {
+  name: "CatchUp for Misskey/Sharkey"
+  version: "0.1.0"
+  author: "<you>"
+  description: "Time-boxed recap of Home/Hybrid with Top Links and per-author grouping"
+  permissions: []
+  config: {
+    defaultContext: { type: 'string', label: 'Default context', default: 'home' }
+    defaultWindowHours: { type: 'number', label: 'Default window (hours)', default: 12 }
+    pageCap: { type: 'number', label: 'Page cap (×100)', default: 8 }
+    showTopLinks: { type: 'boolean', label: 'Show Top Links', default: true }
+    originals: { type: 'boolean', label: 'Originals', default: true }
+    replies: { type: 'boolean', label: 'Replies', default: false }
+    renotes: { type: 'boolean', label: 'Renotes/Quotes', default: false }
+    addToPostForm: { type: 'boolean', label: 'Show in Post form', default: false }
+    addToNoteMenu: { type: 'boolean', label: 'Show in Note menu', default: false }
+  }
+}
+
+@init() {
+  // Always add to User menu
+  Plugin:register_user_action('Open CatchUp', @(user){ CatchUp:open() })
+
+  if Plugin:config.addToPostForm { Plugin:register_post_form_action('Open CatchUp', @(note, rewrite){ CatchUp:open() }) }
+  if Plugin:config.addToNoteMenu { Plugin:register_note_action('Open CatchUp', @(note){ CatchUp:open() }) }
+}
+
+namespace CatchUp {
+  @open() {
+    Ui:render([ CatchUp:UI() ])
+    CatchUp:refresh()
+  }
+
+  @UI(){
+    let hours = Plugin:config.defaultWindowHours
+    let ctx = Plugin:config.defaultContext
+    let filters = {
+      originals: Plugin:config.originals,
+      replies: Plugin:config.replies,
+      renotes: Plugin:config.renotes
+    }
+
+    return Ui:C:container({ children: [
+      // Header controls
+      Ui:C:container({ children: [
+        Ui:C:select({
+          items: [ {text:'Home', value:'home'}, {text:'Hybrid', value:'hybrid'} ]
+          default: ctx
+          onChange: @(v){ ctx = v; CatchUp:refresh(ctx, hours, filters) }
+          label: 'Context'
+        })
+        Ui:C:select({
+          items: [3,6,9,12,18,24,36,48].map(@(h){ {text: `{h}h`, value: h} })
+          default: hours
+          onChange: @(v){ hours = v; CatchUp:refresh(ctx, hours, filters) }
+          label: 'Window'
+        })
+        Ui:C:buttons({ buttons: [
+          { text: 'Originals', onClick: @(){ filters.originals = !filters.originals; CatchUp:refresh(ctx, hours, filters) } },
+          { text: 'Replies', onClick: @(){ filters.replies = !filters.replies; CatchUp:refresh(ctx, hours, filters) } },
+          { text: 'Renotes', onClick: @(){ filters.renotes = !filters.renotes; CatchUp:refresh(ctx, hours, filters) } }
+        ]})
+        Ui:C:button({ text:'Refresh', primary:true, onClick:@(){ CatchUp:refresh(ctx, hours, filters) } })
+      ]})
+
+      // Content placeholders
+      Ui:C:container({ children:[ Ui:C:text({ text: 'Authors' }) ] }, 'authors')
+      Ui:C:container({ children:[ Ui:C:text({ text: 'Feed' }) ] }, 'feed')
+      Ui:C:container({ children:[ Ui:C:text({ text: 'Top Links' }) ] }, 'toplinks')
+    ]})
+  }
+
+  let state = {
+    ctx: 'home',
+    hours: 12,
+    filters: { originals:true, replies:false, renotes:false },
+    pageCap: Plugin:config.pageCap,
+    data: [],
+    groups: Map:new(),
+    links: Map:new(),
+    stats: { pages:0, scanned:0 }
+  }
+
+  @refresh(ctx?, hours?, filters?) {
+    if ctx != null { state.ctx = ctx }
+    if hours != null { state.hours = hours }
+    if filters != null { state.filters = filters }
+    let res = CatchUp:fetchWindow(state.ctx, state.hours, state.filters)
+    state.data = res.items
+    state.stats = { pages: res.pages, scanned: res.items.len() }
+    let g = Map:new(); let linkMap = Map:new()
+    for n in state.data {
+      if n.visibility == 'specified' { continue }
+      let kind = n.renoteId ? (n.text ? 'quote' : 'renote') : (n.replyId ? 'reply' : 'original')
+      // apply filter flags
+      if !state.filters.originals && kind == 'original' { continue }
+      if !state.filters.replies && kind == 'reply' { continue }
+      if !state.filters.renotes && (kind == 'renote' || kind == 'quote') { continue }
+      // group by author
+      if !g.has(n.user.id) { g[n.user.id] = [] }
+      g[n.user.id].push({ note:n, kind })
+      // extract links (URL_REGEX is implementation-defined)
+      let urls = Regex:find_all(URL_REGEX, n.text || '')
+      for u in urls { let k = CatchUp:linkKey(u); linkMap[k] = (linkMap[k] || 0) + 1 }
+    }
+    state.groups = g
+    state.links = linkMap
+
+    CatchUp:renderAuthors(g)
+    CatchUp:renderFeed(g)
+    CatchUp:renderTopLinks(linkMap)
+  }
+
+  @fetchWindow(ctx, hours, filters){
+    let endTs = Time:now()
+    let startTs = endTs - hours*3600*1000
+    let acc = []
+    let page = 0
+    let cursor = null
+    while page < Plugin:config.pageCap {
+      let params = { limit: 100, withFiles: false, withRenotes: filters.renotes, withReplies: filters.replies }
+      if cursor != null { params.untilId = cursor }
+      params.sinceDate = startTs
+      params.untilDate = endTs
+      let ep = (ctx == 'home') ? 'notes/timeline' : 'notes/hybrid-timeline'
+      let res = Mk:api(ep, params)
+      if res.len() == 0 { break }
+      acc.push(...res)
+      cursor = res.last().id
+      if res.last().createdAt < startTs { break }
+      page += 1
+    }
+    return { items: acc, pages: page }
+  }
+
+  @linkKey(u){
+    let t = Url:parse(u)
+    let host = (t.host || '').lower()
+    let path = (t.path || '/')
+    path = Regex:replace('/{2,}', '/', path)
+    if path.len() > 1 && path.endsWith('/') { path = path.slice(0, path.len()-1) }
+    return `{host}{path}`
+  }
+
+  @renderAuthors(g){
+    // order by count desc and render avatar + count per author
+    Ui:get('authors').update({ children: [ Ui:C:text({ text: `Authors: {g.keys().len()}` }) ] })
+  }
+
+  @renderFeed(g){
+    Ui:get('feed').update({ children: [ Ui:C:text({ text: `Feed items: {state.stats.scanned}` }) ] })
+  }
+
+  @renderTopLinks(m){
+    // top 10
+    let entries = m.entries().sort(@(a,b){ b[1]-a[1] }).slice(0,10)
+    Ui:get('toplinks').update({ children: [ Ui:C:text({ text: `Top Links: {entries.len()}` }) ] })
+  }
+}
+```
+
+### AiScript: App widget skeleton (`widget/catchup_widget.ais`)
+
+```
+/// @ 0.12.4
+### {
+  name: "CatchUp Widget"
+  version: "0.1.0"
+  author: "<you>"
+  description: "Pinned summary of CatchUp activity"
+}
+
+@init(){ Ui:render([ CatchUpWidget:UI() ]) }
+
+namespace CatchUpWidget {
+  @UI(){
+    return Ui:C:container({ children: [
+      Ui:C:text({ text: 'CatchUp summary' })
+      Ui:C:button({ text: 'Open CatchUp plugin', onClick:@(){ Mk:dialog('Info','Use User menu → Open CatchUp','info') } })
+    ]})
+  }
+}
+```
+
+### One‑click install site
+
+* Provide an installer link: `https://{HOST}/install-extensions?url={API_URL}&hash={SHA512}`.
+* `{API_URL}` returns JSON. For plugin:
+
+```
+{
+  "type": "plugin",
+  "data": "<contents of catchup.ais as a single string with LF newlines>"
+}
+```
+
+* For widget, set `type` to `plugin` as well, with its own `data`.
+* Compute SHA‑512 over the exact AiScript text.
+
+### Thread badges
+
+* When rendering a reply, call `notes/show` up to **3 hops** to find the root author and show a compact "↩︎ to @user" badge without expanding full threads.
+
+### Styling guidance
+
+* Mirror Phanpy CatchUp density: compact rows, small avatar strip, subtle count badges.
+* Use `Ui:C:container`, `Ui:C:text`, `Ui:C:buttons`, `Ui:C:select`, and spacing props to achieve a clean layout.
+
+### Testing steps
+
+1. Install via one‑click on a Misskey/Sharkey ≥ v2023.11.0 instance.
+2. Open from User menu → "Open CatchUp".
+3. Switch context and windows. Verify page cap logic stops at the window boundary.
+4. Toggle filters and confirm counts shift.
+5. Validate Top Links grouping by domain+path and click-through filters.
